@@ -1,6 +1,4 @@
-/**
- * Simple test to check movement data
- */
+
 import { buses } from './src/config/buses.js';
 import routes from './src/config/routes.js';
 
