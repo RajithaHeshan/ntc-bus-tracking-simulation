@@ -8,7 +8,6 @@ async function fetchAllBusesWithLimit() {
     try {
         console.log('🔍 Fetching ALL buses from main API with higher limit...\n');
         
-        // Try with higher limit
         const response = await axios.get('http://localhost:3000/api/buses?limit=100', {
             timeout: 10000
         });
