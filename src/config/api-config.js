@@ -18,6 +18,7 @@ export const apiConfig = {
   // API Endpoints
   endpoints: {
     liveLocation: '/locations',
+    liveLocationComplete: '/locations/complete', // Dedicated endpoint for completed routes
     tripStatus: '/trips/status', 
     health: '/health',
     buses: '/buses',

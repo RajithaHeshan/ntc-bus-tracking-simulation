@@ -80,7 +80,8 @@ export class GPSDevice extends EventEmitter {
 
     try {
       // Reset trip start time when bus starts a new emission cycle (more realistic)
-      if (!this.actualTripStartTime || this.movement.nextWaypointIndex === 0) {
+      // Set trip start time only once when starting a truly new trip
+      if (!this.actualTripStartTime) {
         this.actualTripStartTime = new Date();
         console.log(`🚀 Bus ${this.busId} starting new trip segment at ${this.actualTripStartTime.toLocaleTimeString()}`);
       }
@@ -92,6 +93,11 @@ export class GPSDevice extends EventEmitter {
       const locationData = this.generateLocationData();
       this.emit('locationUpdate', locationData);
       this.lastUpdate = new Date();
+
+      // If route was completed, reset for next trip now
+      if (this.routeCompleted) {
+        this.resetForNextTrip();
+      }
 
     } catch (error) {
       console.error(`❌ Error in single position update for device ${this.deviceId}:`, error.message);
@@ -121,19 +127,17 @@ export class GPSDevice extends EventEmitter {
     if (this.movement.nextWaypointIndex >= waypoints.length) {
       // Route completed - trigger completion process
       console.log(`🏁 Bus ${this.busId} completed route ${this.currentRoute.routeId}!`);
+      
+      // Store completion flag but don't reset trip data yet
+      this.routeCompleted = true;
+      
+      // Trigger completion process
       this.triggerRouteCompletion();
       
-      // Reset for next trip
-      this.movement.nextWaypointIndex = 0;
-      this.stepsAtCurrentWaypoint = 0; // Reset step counter
-      this.actualTripStartTime = null; // Reset for new trip
-      this.currentPosition = { 
-        ...this.currentRoute.startLocation.coordinates,
-        accuracy: 5 + Math.random() * 10,
-        altitude: Math.floor(Math.random() * 100 + 50)
-      };
-      console.log(`🔄 Bus ${this.busId} restarting from ${this.currentRoute.startLocation.name}`);
-      return;
+      // Note: We don't reset actualTripStartTime here anymore
+      // It will be reset after the final location data is generated
+      
+      return; // Continue to generate final location data
     }
     
     // Force waypoint progression every emission for demo purposes
@@ -233,6 +237,11 @@ export class GPSDevice extends EventEmitter {
       this.emit('locationUpdate', locationData);
       this.lastUpdate = new Date();
       
+      // If route was completed, reset for next trip now
+      if (this.routeCompleted) {
+        this.resetForNextTrip();
+      }
+      
     } catch (error) {
       console.error(`❌ Error updating position for device ${this.deviceId}:`, error.message);
       this.emit('deviceError', {
@@ -283,13 +292,24 @@ export class GPSDevice extends EventEmitter {
     const variation = (Math.random() - 0.5) * 20; // ±10 km/h variation
     targetSpeed += variation;
     
-    // Respect speed limits
-    targetSpeed = Math.min(targetSpeed, route.maxSpeed);
+    // Occasionally allow slight speeding (realistic driver behavior) - increased for demo
+    const speedLimitTolerance = Math.random() < 0.15 ? 15 : 0; // 15% chance of 15 km/h over limit (increased from 5%)
+    const maxAllowedSpeed = route.maxSpeed + speedLimitTolerance;
+    
+    // Respect speed limits (with occasional tolerance)
+    targetSpeed = Math.min(targetSpeed, maxAllowedSpeed);
     targetSpeed = Math.max(targetSpeed, 0);
     
     // Simulate traffic and stops
     if (Math.random() < 0.1) { // 10% chance of stop/slow traffic
       targetSpeed *= Math.random() * 0.5; // Reduce speed by 0-50%
+    }
+    
+    // Simulate highway driving (higher speeds on expressways)
+    if (route.routeName?.includes('Highway') || route.routeName?.includes('Express')) {
+      if (Math.random() < 0.15) { // 15% chance of higher highway speeds
+        targetSpeed = Math.min(targetSpeed * 1.1, maxAllowedSpeed);
+      }
     }
     
     this.movement.speed = Math.max(0, targetSpeed);
@@ -386,12 +406,20 @@ export class GPSDevice extends EventEmitter {
       serverTimestamp: new Date().toISOString(),
       isValid: true,
       
-      // Alerts (matching API schema)
+      // Alerts (keeping boolean for API compatibility + adding message fields)
       alerts: {
         speedingAlert: alerts.speedingAlert,
-        routeDeviationAlert: alerts.routeDeviationAlert || false,
-        emergencyAlert: alerts.emergencyAlert || false,
-        maintenanceAlert: false
+        routeDeviationAlert: alerts.routeDeviationAlert,
+        emergencyAlert: alerts.emergencyAlert,
+        maintenanceAlert: alerts.maintenanceAlert
+      },
+      
+      // Alert messages as a separate field to bypass API validation
+      alertMessages: {
+        speedingMessage: alerts.speedingAlert ? `Bus exceeding speed limit by ${Math.round(this.movement.speed - (this.currentRoute.maxSpeed || 80))} km/h` : "Speed within normal limits",
+        routeDeviationMessage: alerts.routeDeviationAlert ? "GPS indicates possible route deviation or alternate path" : "Following designated route",
+        emergencyMessage: alerts.emergencyAlert ? "Emergency situation detected - immediate attention required" : "No emergency alerts",
+        maintenanceMessage: alerts.maintenanceAlert ? this.generateMaintenanceMessage() : "Vehicle systems operating normally"
       }
     };
   }
@@ -494,27 +522,29 @@ export class GPSDevice extends EventEmitter {
       this.currentRoute.endLocation.coordinates
     ];
 
-    // Calculate total route distance
-    let totalRouteDistance = 0;
-    for (let i = 0; i < waypoints.length - 1; i++) {
-      totalRouteDistance += this.calculateDistance(waypoints[i], waypoints[i + 1]);
+    // Use route's predefined distance and duration for more realistic calculations
+    const totalRouteDistance = this.currentRoute.distance || 100; // Use route distance in km
+    const routeEstimatedDuration = this.currentRoute.estimatedDuration || Math.round((totalRouteDistance / 50) * 60); // Use route duration in minutes
+
+    // Calculate distance traveled based on waypoint progress
+    const totalWaypoints = waypoints.length - 1; // Number of segments
+    const completedSegments = Math.min(this.movement.nextWaypointIndex, totalWaypoints);
+    let progressPercentage = completedSegments / totalWaypoints;
+    
+    // Add micro-progress within current segment if not at destination
+    if (this.movement.nextWaypointIndex < waypoints.length && this.movement.nextWaypointIndex > 0) {
+      const currentSegmentStart = waypoints[this.movement.nextWaypointIndex - 1];
+      const currentSegmentEnd = waypoints[this.movement.nextWaypointIndex];
+      const currentSegmentDistance = this.calculateDistance(currentSegmentStart, currentSegmentEnd);
+      const distanceFromSegmentStart = this.calculateDistance(currentSegmentStart, this.currentPosition);
+      const segmentProgress = Math.min(distanceFromSegmentStart / currentSegmentDistance, 1);
+      
+      // Add the progress within current segment
+      const additionalProgress = segmentProgress / totalWaypoints;
+      progressPercentage = Math.min((completedSegments + additionalProgress) / totalWaypoints, 1);
     }
 
-    // Calculate distance traveled so far
-    let distanceTraveled = 0;
-    for (let i = 0; i < this.movement.nextWaypointIndex; i++) {
-      if (i < waypoints.length - 1) {
-        distanceTraveled += this.calculateDistance(waypoints[i], waypoints[i + 1]);
-      }
-    }
-
-    // Add distance from last completed waypoint to current position
-    if (this.movement.nextWaypointIndex > 0 && this.movement.nextWaypointIndex <= waypoints.length) {
-      const lastWaypoint = waypoints[this.movement.nextWaypointIndex - 1];
-      distanceTraveled += this.calculateDistance(lastWaypoint, this.currentPosition);
-    }
-
-    // Calculate remaining distance to destination
+    const distanceTraveled = totalRouteDistance * progressPercentage;
     const remainingDistance = Math.max(0, totalRouteDistance - distanceTraveled);
 
     // Calculate distance to next waypoint
@@ -524,27 +554,53 @@ export class GPSDevice extends EventEmitter {
       distanceToNextWaypoint = this.calculateDistance(this.currentPosition, nextWaypoint);
     }
 
-    // Calculate duration information
-    const currentSpeed = this.movement.speed > 0 ? this.movement.speed : 30; // Default 30 km/h if stationary
-    
-    // Calculate realistic elapsed duration based on route progress
+    // Calculate duration information using realistic logic
     let elapsedDuration = 0;
+    let estimatedTotalDuration = routeEstimatedDuration;
+    let estimatedRemainingDuration = 0;
+
     if (this.actualTripStartTime) {
-      elapsedDuration = Math.round((Date.now() - this.actualTripStartTime.getTime()) / (1000 * 60)); // in minutes
+      // For simulation purposes, calculate realistic elapsed time based on route progress and waypoints
+      const waypointProgress = this.movement.nextWaypointIndex;
+      const baseElapsedTime = Math.round(estimatedTotalDuration * progressPercentage);
+      const waypointBasedTime = Math.max(waypointProgress * 2, 1); // 2 minutes per waypoint, minimum 1
+      
+      // Use the higher of progress-based time or waypoint-based time for realistic simulation
+      elapsedDuration = Math.max(baseElapsedTime, waypointBasedTime);
+      
+      // If the trip is complete (100% progress), remaining should be 0
+      if (progressPercentage >= 1.0) {
+        elapsedDuration = estimatedTotalDuration;
+        estimatedRemainingDuration = 0;
+      } else {
+        // For ongoing trips, calculate remaining duration
+        estimatedRemainingDuration = Math.max(0, estimatedTotalDuration - elapsedDuration);
+      }
     } else {
-      // If no actual start time, estimate based on route progress
-      const progressPercentage = this.movement.nextWaypointIndex / waypoints.length;
-      const averageSpeed = 35; // km/h
-      const estimatedTimeForProgress = Math.round((totalRouteDistance * progressPercentage / averageSpeed) * 60);
-      elapsedDuration = Math.min(estimatedTimeForProgress, 30); // Cap at 30 minutes for realism
+      // Estimate elapsed time based on route progress with better granularity
+      const baseElapsedTime = Math.round(estimatedTotalDuration * progressPercentage);
+      
+      // Add some realistic variation based on waypoint progression
+      const waypointProgress = this.movement.nextWaypointIndex;
+      const additionalTime = Math.min(waypointProgress * 2, 10); // Add 2 minutes per waypoint, max 10
+      
+      elapsedDuration = Math.max(baseElapsedTime + additionalTime, 1); // Minimum 1 minute for active trips
+      
+      // If trip is complete, remaining should be 0
+      if (progressPercentage >= 1.0) {
+        elapsedDuration = estimatedTotalDuration;
+        estimatedRemainingDuration = 0;
+      } else {
+        estimatedRemainingDuration = Math.max(0, estimatedTotalDuration - elapsedDuration);
+      }
     }
 
-    // Estimate total duration based on route distance and average speed
-    const averageSpeed = 35; // Average speed in km/h for estimation
-    const estimatedTotalDuration = Math.round((totalRouteDistance / averageSpeed) * 60); // in minutes
-
-    // Estimate remaining duration based on remaining distance and current speed
-    const estimatedRemainingDuration = Math.round((remainingDistance / currentSpeed) * 60); // in minutes
+    // Final consistency check: ensure elapsed + remaining = total for mathematical accuracy
+    const calculatedTotal = elapsedDuration + estimatedRemainingDuration;
+    if (Math.abs(calculatedTotal - estimatedTotalDuration) > 5) { // Allow 5 minute tolerance
+      // Adjust remaining duration to maintain consistency
+      estimatedRemainingDuration = Math.max(0, estimatedTotalDuration - elapsedDuration);
+    }
 
     // Calculate estimated arrival time
     const estimatedArrival = new Date(Date.now() + (estimatedRemainingDuration * 60 * 1000));
@@ -566,16 +622,92 @@ export class GPSDevice extends EventEmitter {
   }
 
   /**
+   * Reset bus for next trip after route completion
+   */
+  resetForNextTrip() {
+    console.log(`🔄 Bus ${this.busId} resetting for next trip`);
+    
+    // Reset trip-related properties
+    this.movement.nextWaypointIndex = 0;
+    this.stepsAtCurrentWaypoint = 0;
+    this.actualTripStartTime = null;
+    this.routeCompleted = false;
+    
+    // Reset position to start location
+    this.currentPosition = { 
+      ...this.currentRoute.startLocation.coordinates,
+      accuracy: 5 + Math.random() * 10,
+      altitude: Math.floor(Math.random() * 100 + 50)
+    };
+    
+    console.log(`🔄 Bus ${this.busId} restarted from ${this.currentRoute.startLocation.name}`);
+  }
+
+  /**
    * Check for various alerts
    */
   checkAlerts() {
+    // Realistic Sri Lankan bus alert scenarios
+    const currentTime = new Date();
+    const currentHour = currentTime.getHours();
+    
+    // Speed-based alerts
+    const maxSpeed = this.currentRoute.maxSpeed || 80; // Default 80 km/h for Sri Lankan highways
+    const speedingAlert = this.movement.speed > maxSpeed;
+    
+    // Route deviation - simulate occasional GPS drift or alternate routes (increased for demo)
+    const routeDeviationAlert = Math.random() < 0.08; // 8% chance of route deviation (increased from 2%)
+    
+    // Emergency alerts - simulate rare emergency situations (increased for demo)
+    const emergencyAlert = Math.random() < 0.03; // 3% chance of emergency (increased from 0.1%)
+    
+    // Maintenance alerts based on realistic scenarios (increased for demo)
+    let maintenanceAlert = false;
+    
+    // Higher maintenance alerts during peak hours (7-9 AM, 5-7 PM)
+    if ((currentHour >= 7 && currentHour <= 9) || (currentHour >= 17 && currentHour <= 19)) {
+      maintenanceAlert = Math.random() < 0.06; // 6% chance during peak hours
+    } else {
+      maintenanceAlert = Math.random() < 0.04; // 4% chance during off-peak
+    }
+    
+    // Additional realistic conditions
+    if (this.batteryLevel < 30) {
+      maintenanceAlert = true; // Low battery triggers maintenance alert
+    }
+    
+    if (this.signalStrength === 'poor' && Math.random() < 0.5) {
+      routeDeviationAlert = true; // Poor signal can cause route deviation alerts
+    }
+    
     return {
-      speedingAlert: this.movement.speed > this.currentRoute.maxSpeed,
-      lowBatteryAlert: this.batteryLevel < 20,
-      signalLossAlert: this.signalStrength === 'no-signal',
-      routeDeviationAlert: false, // Could implement route deviation logic
-      emergencyAlert: false
+      speedingAlert,
+      routeDeviationAlert,
+      emergencyAlert,
+      maintenanceAlert
     };
+  }
+
+  /**
+   * Generate specific maintenance alert messages
+   */
+  generateMaintenanceMessage() {
+    if (this.batteryLevel < 30) {
+      return `Low battery level: ${this.batteryLevel.toFixed(1)}% - charging required`;
+    }
+    
+    const maintenanceTypes = [
+      "Scheduled maintenance due - engine service required",
+      "Tire pressure monitoring system alert",
+      "Brake system inspection needed",
+      "Air conditioning service required",
+      "Engine temperature running high",
+      "Fuel system efficiency check needed",
+      "Transmission service overdue",
+      "Electrical system diagnostic required"
+    ];
+    
+    return maintenanceTypes[Math.floor(Math.random() * maintenanceTypes.length)];
   }
   
   /**
@@ -596,19 +728,55 @@ export class GPSDevice extends EventEmitter {
   }
   
   /**
-   * Simulate signal strength variations
+   * Simulate signal strength variations based on Sri Lankan terrain
    */
   checkSignalStrength() {
     const random = Math.random();
     
-    if (random < 0.05) { // 5% chance
-      this.signalStrength = 'poor';
-    } else if (random < 0.15) { // 10% chance
-      this.signalStrength = 'fair';
-    } else if (random < 0.3) { // 15% chance
-      this.signalStrength = 'good';
-    } else { // 70% chance
-      this.signalStrength = 'excellent';
+    // Signal strength varies based on route and terrain
+    // Mountain routes (Kandy-Nuwara Eliya) have poorer signal
+    const isMountainRoute = this.currentRoute.routeId === 'RT008' || 
+                           this.currentRoute.routeName?.includes('Nuwara Eliya') ||
+                           this.currentRoute.routeName?.includes('Kandy');
+    
+    // Rural/Eastern routes may have weaker signals
+    const isRuralRoute = this.currentRoute.routeName?.includes('Batticaloa') ||
+                        this.currentRoute.routeName?.includes('Trincomalee') ||
+                        this.currentRoute.routeName?.includes('Anuradhapura');
+    
+    if (isMountainRoute) {
+      // Mountain routes have more signal variations
+      if (random < 0.15) { // 15% chance
+        this.signalStrength = 'poor';
+      } else if (random < 0.35) { // 20% chance
+        this.signalStrength = 'fair';
+      } else if (random < 0.65) { // 30% chance
+        this.signalStrength = 'good';
+      } else { // 35% chance
+        this.signalStrength = 'excellent';
+      }
+    } else if (isRuralRoute) {
+      // Rural routes have moderate signal variations
+      if (random < 0.10) { // 10% chance
+        this.signalStrength = 'poor';
+      } else if (random < 0.25) { // 15% chance
+        this.signalStrength = 'fair';
+      } else if (random < 0.50) { // 25% chance
+        this.signalStrength = 'good';
+      } else { // 50% chance
+        this.signalStrength = 'excellent';
+      }
+    } else {
+      // Urban/highway routes have better signal
+      if (random < 0.03) { // 3% chance
+        this.signalStrength = 'poor';
+      } else if (random < 0.10) { // 7% chance
+        this.signalStrength = 'fair';
+      } else if (random < 0.25) { // 15% chance
+        this.signalStrength = 'good';
+      } else { // 75% chance
+        this.signalStrength = 'excellent';
+      }
     }
   }
   

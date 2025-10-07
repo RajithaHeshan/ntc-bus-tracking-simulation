@@ -171,6 +171,10 @@ class BusGPSSimulator {
       // Restart all devices
       for (const [busId, device] of this.devices) {
         if (device.isActive && this.isRunning) {
+          // Reset device for next trip
+          device.resetForNextTrip();
+          
+          // Generate new trip and start tracking
           const newTrip = this.generateMockTrip(busId, device.currentRoute.routeId);
           device.startTracking(newTrip);
         }
@@ -222,9 +226,13 @@ class BusGPSSimulator {
           setTimeout(async () => {
             const bus = this.devices.get(completionData.busId);
             if (bus && this.isRunning) {
+              // Reset bus for next trip
+              bus.resetForNextTrip();
+              
+              // Generate new trip and start tracking
               const newTrip = this.generateMockTrip(completionData.busId, completionData.routeId);
               bus.startTracking(newTrip);
-              console.log(chalk.green(`🔄 Restarted: Bus ${data.busId} on ${data.routeId}`));
+              console.log(chalk.green(`🔄 Restarted: Bus ${completionData.busId} on ${completionData.routeId}`));
             }
           }, 2000); // 2 second delay before restart
         }

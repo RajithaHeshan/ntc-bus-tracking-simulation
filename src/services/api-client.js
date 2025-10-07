@@ -126,9 +126,8 @@ export class APIClient {
    */
   async sendRouteCompletion(completionData) {
     try {
-      // Send completion data to the same locations endpoint
-      // The API will detect completion via completionStatus field
-      const response = await this.makeRequest('POST', apiConfig.endpoints.liveLocation, completionData);
+      // Send completion data to dedicated completion endpoint
+      const response = await this.makeRequest('POST', apiConfig.endpoints.liveLocationComplete, completionData);
       
       if (response?.status === 200 || response?.status === 201) {
         console.log(`🏁 Route completion sent for bus ${completionData.busId} - ${response.status}`);
