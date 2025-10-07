@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Sri Lanka Bus GPS Data Simulator
 
 A Node.js IoT device simulator that generates realistic GPS tracking data for Sri Lankan buses, sending location updates every 30 seconds to simulate real-world bus tracking systems.
@@ -202,3 +203,6 @@ To integrate with your main API:
 ---
 
 **Note**: This simulator is designed for development and testing purposes. For production use, ensure proper error handling and monitoring are in place.
+=======
+# ntc-bus-tracking-simulation
+>>>>>>> 81825b0be99ef2506aef366b1ae71aef08752381
