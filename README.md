@@ -200,9 +200,4 @@ To integrate with your main API:
 ✅ **IoT simulation**: Acts as GPS devices with realistic variations  
 ✅ **API integration**: HTTP client for seamless data transmission
 
----
 
-**Note**: This simulator is designed for development and testing purposes. For production use, ensure proper error handling and monitoring are in place.
-=======
-# ntc-bus-tracking-simulation
->>>>>>> 81825b0be99ef2506aef366b1ae71aef08752381
